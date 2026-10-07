@@ -68,8 +68,8 @@ public class TEdArchiveCardServiceImpl extends ServiceImpl<TEdArchiveCardMapper,
             return 0;
         }
         refSync(record, refArch);
-        // 学分折关注层级（计算链）
-        bandCalc(record);
+        // 学分折关注层级（计算链）；判不出来时新卡落 0 直说，不随便给档
+        bandCalc(record, 0);
         // 立卡落「待核对」，版本序 1，核验串未定形
         record.setStatus(ST_PENDING);
         record.setNodeNo(1);
@@ -96,10 +96,14 @@ public class TEdArchiveCardServiceImpl extends ServiceImpl<TEdArchiveCardMapper,
         }
         TEdArchiveCard calcCur = this.baseMapper.selectById(record.getId());
         if (calcCur != null) {
+            // 没改到的字段先回填，重算层级要拿全量事实，算不出则沿用原层级
             if (record.getQty() == null) {
                 record.setQty(calcCur.getQty());
             }
-            bandCalc(record);
+            if (record.getSiteId() == null) {
+                record.setSiteId(calcCur.getSiteId());
+            }
+            bandCalc(record, calcCur.getGradeLevel());
         }
         if (record.getQty() == null || record.getQty().signum() <= 0) {
             return 0;
@@ -226,28 +230,41 @@ public class TEdArchiveCardServiceImpl extends ServiceImpl<TEdArchiveCardMapper,
 
     // ================= 关注层级计算 =================
 
-    private void bandCalc(TEdArchiveCard record) {
-        TEdStudent arch = this.edStudentMapper.selectById(record.getSiteId());
+    /**
+     * 学分折关注层级：等于上限算高一档（界值含）。
+     * 判不出来（学分缺失/底档界值不齐）时不硬给档，落回退值——新卡为 0（未定），
+     * 更新时沿用卡里原层级。
+     */
+    private void bandCalc(TEdArchiveCard record, Integer fallbackLevel) {
+        Integer level = levelOfCredits(record);
+        record.setGradeLevel(level == null ? fallbackLevel : level);
+    }
+
+    /** 算得出就返回 1..4，算不出返回 null（调用方决定怎么落） */
+    private Integer levelOfCredits(TEdArchiveCard record) {
+        BigDecimal val = record.getQty();
+        if (val == null) {
+            return null;
+        }
+        TEdStudent arch = record.getSiteId() == null ? null
+                : this.edStudentMapper.selectById(record.getSiteId());
         BigDecimal t1 = arch == null ? null : arch.getTh1Max();
         BigDecimal t2 = arch == null ? null : arch.getTh2Max();
         BigDecimal t3 = arch == null ? null : arch.getTh3Max();
-        BigDecimal val = record.getQty();
-        int level;
-        if (val == null) {
-            level = 0;
-        } else {
-            BigDecimal x = val.setScale(2, java.math.RoundingMode.HALF_UP);
-            if (t1 != null && x.compareTo(t1) < 0) {
-                level = 1;
-            } else if (t1 != null && t2 != null && x.compareTo(t2) < 0) {
-                level = 2;
-            } else if (t2 != null && t3 != null && x.compareTo(t3) < 0) {
-                level = 3;
-            } else {
-                level = 4;
-            }
+        if (t1 == null || t2 == null || t3 == null) {
+            return null;
         }
-        record.setGradeLevel(level);
+        BigDecimal x = val.setScale(2, java.math.RoundingMode.HALF_UP);
+        if (x.compareTo(t1) < 0) {
+            return 1;
+        }
+        if (x.compareTo(t2) < 0) {
+            return 2;
+        }
+        if (x.compareTo(t3) < 0) {
+            return 3;
+        }
+        return 4;
     }
 
 }
